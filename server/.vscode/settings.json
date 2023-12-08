@@ -1,0 +1,8 @@
+{
+    "python.testing.pytestArgs": [
+        "-lxvv"
+    ],
+    "python.poetryPath": "poetry",
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+}
