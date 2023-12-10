@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Literal
 
+import reflex as rx
+
 from server.base import BaseModel, Field
 
 
@@ -90,8 +92,7 @@ class ErrorEvent(BaseEvent):
 class Event(BaseModel):
     """Event data."""
     __root__: Annotated[
-        JoinEvent | PushObjectEvent | LeaveEvent | PopObjectEvent,
-        ErrorEvent,
+        JoinEvent | PushObjectEvent | LeaveEvent | PopObjectEvent | ErrorEvent,
         Field(discriminator="type"),
     ]
 
@@ -134,7 +135,6 @@ class Channel(BaseModel):
         assert self.policy is None
         self.channel_controller = channel_controller
         self.policy = policy
-
 
     async def _publish_event(self, event: Event, publisher_id: str | None):
         try:
@@ -195,25 +195,26 @@ class Channel(BaseModel):
 
 
 class ChannelPolicy(BaseModel):
-    max_objects: int
-    max_ccu: int
+    max_objects: int = 30
+    max_ccu: int = 10
     timeout: float | int = 1
 
 
 class ChannelController(BaseModel):
-    channels: dict[str, Channel]
+    channels: dict[str, Channel] = Field(default_factory=dict)
 
     def get_channel(self, channel_id: str) -> Channel | None:
         return self.channels.get(channel_id, None)
 
     def create_channel(self, channel_id: str) -> Channel | None:
         if channel_id in self.channels:
-            return None
+            return self.channels.get(channel_id)
         else:
             channel = Channel(id=channel_id)
             self.channels[channel_id] = channel
             # TODO: Remove policy hard coding
             channel.initialize(self, ChannelPolicy(max_objects=30, max_ccu=10))
+            return channel
 
     def close_channel(self, channel_id: str) -> None:
         assert channel_id in self.channels
