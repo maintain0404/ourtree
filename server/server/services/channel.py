@@ -1,6 +1,7 @@
 """Channel."""
 from __future__ import annotations
 
+from collections import deque
 from asyncio import Lock, TaskGroup, wait_for
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -56,10 +57,17 @@ class BaseEvent(BaseModel):
     type: str
 
 
+    def as_message(self) -> str:
+        ...
+
+
 class JoinEvent(BaseEvent):
     """Event data for user join."""
     type: Literal["join"] = "join"
     user: UserInfo
+
+    def as_message(self) -> str:
+        return f'{self.user.nickname} 님이 채널에 참여했어요!'
 
 
 class PushObjectEvent(BaseEvent):
@@ -69,17 +77,18 @@ class PushObjectEvent(BaseEvent):
     appender: UserInfo
     pop: str | None
 
-
-class PopObjectEvent(BaseEvent):
-    """Event data for pop object."""
-    type: Literal["pop-object"] = "pop-object"
-    id: str
+    def as_message(self) -> str:
+        return f'{self.appender.nickname} 님이 새로 트리를 장식했어요!'
 
 
 class LeaveEvent(BaseEvent):
     """Event data for user leaving."""
     type: Literal["leave"] = "leave"
     user: UserInfo
+
+    def as_message(self) -> str:
+        return f'{self.user.nickname} 님이 채널을 나갔어요!'
+
 
 
 class ErrorEvent(BaseEvent):
@@ -88,11 +97,14 @@ class ErrorEvent(BaseEvent):
     code: str
     message: str
 
+    def as_message(self) -> str:
+        return f'알 수 없는 오류가 발생헀어요.(code: {self.code}, message: {self.message})'
+
 
 class Event(BaseModel):
     """Event data."""
     __root__: Annotated[
-        JoinEvent | PushObjectEvent | LeaveEvent | PopObjectEvent | ErrorEvent,
+        JoinEvent | PushObjectEvent | LeaveEvent | ErrorEvent,
         Field(discriminator="type"),
     ]
 
@@ -102,6 +114,7 @@ class Channel(BaseModel):
 
     id: str
     users: dict[str, User] = Field(default_factory=dict)
+    # events: deque[str] = Field(default_factory=lambda: deque(maxlen=30))
     objects: dict[str, Object] = Field(default_factory=dict)
     channel_controller: ChannelController | None = Field(None, exclude=True, repr=False)
     policy: ChannelPolicy | None = None
@@ -198,6 +211,7 @@ class ChannelPolicy(BaseModel):
     max_objects: int = 30
     max_ccu: int = 10
     timeout: float | int = 1
+    cooltime: int = 10
 
 
 class ChannelController(BaseModel):
