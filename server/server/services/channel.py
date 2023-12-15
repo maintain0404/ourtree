@@ -1,19 +1,17 @@
 """Channel."""
 from __future__ import annotations
 
-from collections import deque
 from asyncio import Lock, TaskGroup, wait_for
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Literal
-
-import reflex as rx
 
 from server.base import BaseModel, Field
 
 
 class Position(BaseModel):
     """Posision of objects."""
+
     x: int
     y: int
 
@@ -44,7 +42,7 @@ class UserInfo(BaseModel):
 class User(UserInfo):
     """User."""
 
-    session: str
+    id: str
     connection: BaseUserConnection
 
     class Config:
@@ -56,53 +54,59 @@ class BaseEvent(BaseModel):
 
     type: str
 
-
     def as_message(self) -> str:
         ...
 
 
 class JoinEvent(BaseEvent):
     """Event data for user join."""
+
     type: Literal["join"] = "join"
     user: UserInfo
 
     def as_message(self) -> str:
-        return f'{self.user.nickname} 님이 채널에 참여했어요!'
+        return f"{self.user.nickname} 님이 채널에 참여했어요!"
 
 
 class PushObjectEvent(BaseEvent):
     """Event data for pushing new object."""
+
     type: Literal["push-object"] = "push-object"
     object: Object
     appender: UserInfo
     pop: str | None
 
     def as_message(self) -> str:
-        return f'{self.appender.nickname} 님이 새로 트리를 장식했어요!'
+        return f"{self.appender.nickname} 님이 새로 트리를 장식했어요!"
 
 
 class LeaveEvent(BaseEvent):
     """Event data for user leaving."""
+
     type: Literal["leave"] = "leave"
     user: UserInfo
 
     def as_message(self) -> str:
-        return f'{self.user.nickname} 님이 채널을 나갔어요!'
-
+        return f"{self.user.nickname} 님이 채널을 나갔어요!"
 
 
 class ErrorEvent(BaseEvent):
     """Event data for error."""
+
     type: Literal["error"] = "error"
     code: str
     message: str
 
     def as_message(self) -> str:
-        return f'알 수 없는 오류가 발생헀어요.(code: {self.code}, message: {self.message})'
+        return (
+            f"알 수 없는 오류가 발생헀어요."
+            f"(code: {self.code}, message: {self.message})"
+        )
 
 
 class Event(BaseModel):
     """Event data."""
+
     __root__: Annotated[
         JoinEvent | PushObjectEvent | LeaveEvent | ErrorEvent,
         Field(discriminator="type"),
@@ -139,7 +143,6 @@ class Channel(BaseModel):
             finally:
                 if self.event_lock.locked():
                     self.event_lock.release()
-  
 
         return inner()
 

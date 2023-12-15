@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio as aio
-import random as rd
-from datetime import datetime, timedelta
-from itertools import islice, product
+from datetime import datetime
+from typing import ClassVar
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import reflex as rx
 
+from server.common.nickname import generate_random_nickname
+from server.components.canvas import Canvas
+from server.components.image import ImageSrcOnClick
 from server.services.channel import (
     BaseUserConnection,
     Channel,
@@ -17,50 +20,6 @@ from server.services.channel import (
     Position,
     User,
 )
-
-NICKNAMES = [
-    f"{a} {b} {c}"
-    for a, b, c in product(
-        [
-            "활발한",
-            "사랑스러운",
-            "귀여운",
-            "건들거리는",
-            "자신감 넘치는",
-            "피곤한",
-            "놀란",
-            "수다스러운",
-            "조용한",
-            "친절한",
-        ],
-        [c1 + c2 + c3 + c4 for c1, c2, c3, c4 in product("IE", "NS", "FT", "PJ")],
-        [
-            "고양이",
-            "범고래",
-            "토끼",
-            "호랑이",
-            "강아지",
-            "하마",
-            "펭귄",
-            "비둘기",
-            "원숭이",
-            "거북이",
-            "사자",
-            "북극곰",
-        ],
-    )
-]
-
-TREE_POSITION = (
-    [(rd.randint(50, 351), 590) for x in range(30)]
-    + [(rd.randint(70, 301), 540) for x in range(25)]
-    + [(rd.randint(90, 281), 490) for x in range(21)]
-    + [(rd.randint(110, 261), 440) for x in range(18)]
-    + [(rd.randint(130, 241), 390) for x in range(15)]
-    + [(rd.randint(150, 221), 340) for x in range(11)]
-    + [(rd.randint(170, 201), 290) for x in range(7)]
-)
-
 
 IMAGES = [
     "/decos/bauble.png",
@@ -73,7 +32,6 @@ IMAGES = [
     "/decos/christmas-bell2.svg",
     "/decos/christmas-candle-clipart.svg",
     "/decos/christmas-candle.svg",
-    "/decos/christmas-stocking.svg",
     "/decos/christmas-stocking2.svg",
     "/decos/christmas-stocking3.svg",
     "/decos/christmas-wreath.svg",
@@ -98,32 +56,56 @@ controller = ChannelController()
 
 
 class CanvasState(rx.State, BaseUserConnection):
-    objects: list[RxObject]
-    events: list[str]
+    # Channel
     _channel: Channel
     _user: RxUser | None
-    nickname: str = ""
-    new_object: RxObject | None = None
-    last_apppended: datetime = datetime(2000, 1, 1, 1, 0, 0)
-    modal: bool = False
-    selected_src: str = "/decos/candy-cane.svg"
-    input_comment: str = ""
+    nickname: str
 
-    last_event: datetime = datetime(2000, 1, 1, 1, 0, 0)
-    last_event_text: str = "Haha"
-    show_lateset_event: bool = False
-    show_event_history: bool = False
+    # For rendering canvas
+    objects: list[RxObject]
+    events: list[str]
 
-    def toggle_modal(self):
-        self.modal = not self.modal
+    # for batch image
+    SELECTED_BORDER: ClassVar[str] = "1px solid purple"
+    comment: str = ""
+    selected_image_uri: str = ""
+    batch_mode: bool = False
 
-    def toggle_event_history(self):
-        self.show_event_history = not self.show_event_history
+    def set_selected_image_uri(self, s: str):
+        self.selected_image_uri = urlparse(s).path
+
+    def go_batch_mode(self):
+        self.batch_mode = True
+
+    async def batch_object(self, x, y):
+        if not self.batch_mode:
+            return
+
+        self.new_object = RxObject(
+            id=str(uuid4()),
+            url=self.selected_image_uri,
+            comment=self.comment,
+            created_at=datetime.now(),
+            position=Position(x=x, y=y),
+        )
+        await self._channel.push_object(
+            Object(**self.new_object.dict()),
+            appender=User(
+                id=self._user.id,
+                nickname=self._user.nickname,
+                session=self._user.id,
+                connection=self._user.connection,
+            ),
+        )
+        self.objects.append(self.new_object)
+        self.last_push = datetime.now()
+        self.batch_mode = False
 
     async def send(self, event: Event):
         async with self:
-            self.events.append(event.as_message())
+            self.events = self.events + [event.as_message()]
             self.last_event = datetime.now()
+            self.notice(self.events[-1])
             if event.type == "push-object":
                 self.objects = [
                     RxObject(**o.dict()) for o in self._channel.objects.values()
@@ -134,20 +116,31 @@ class CanvasState(rx.State, BaseUserConnection):
     async def recieve(self) -> Event:
         ...
 
-    @rx.background
-    async def event_alert(self):
-        while True:
-            if datetime.now() > self.last_event + timedelta(seconds=5):
-                v = False
-            else:
-                v = True
+    show_event_history: bool = False
+    has_notice: bool = False
+    notice_message: str = ""
 
-            async with self:
-                self.show_lateset_event = v
+    def toggle_event_history(self):
+        self.show_event_history = not self.show_event_history
 
-            # print(self.events)
-            await aio.sleep(0.2)
-            yield
+    def notice(self, message: str):
+        # Picking 불가능해서 꼼수로 router_data를 사용함
+        prev_task: aio.Task | None = self.router_data.get("task", None)
+
+        if prev_task is not None and not prev_task.done():
+            prev_task.cancel()
+        self.router_data["task"] = aio.create_task(self.hide_notice(), name="notice")
+        self.notice_message = message
+        self.has_notice = True
+
+    @rx.var
+    def show_notice(self) -> bool:
+        return self.has_notice and not self.show_event_history
+
+    async def hide_notice(self):
+        await aio.sleep(3)
+        async with self:
+            self.has_notice = False
 
     @rx.background
     async def enter_page(self):
@@ -166,7 +159,7 @@ class CanvasState(rx.State, BaseUserConnection):
             # Join channel
             self._user = RxUser(
                 id=self.router.session.client_token,
-                nickname=rd.choice(NICKNAMES),
+                nickname=generate_random_nickname(),
                 session=self.router.session.client_token,
                 connection=self,
             )
@@ -175,45 +168,10 @@ class CanvasState(rx.State, BaseUserConnection):
                 User(
                     id=self._user.id,
                     nickname=self._user.nickname,
-                    session=self._user.session,
+                    session=self._user.id,
                     connection=self._user.connection,
                 )
             )
-
-            return CanvasState.event_alert
-
-    async def push_object(self):
-        until = self.last_apppended + timedelta(
-            seconds=float(self._channel.policy.cooltime)
-        )
-        if datetime.now() < until:
-            self.modal = False
-            self.input_comment = ""
-            return rx.window_alert(
-                f"{until.strftime('%H:%M:%S')} 이후에 다시 장식을 추가할 수 있어요!"
-            )
-
-        pos = rd.choice(TREE_POSITION)
-        self.new_object = RxObject(
-            id=str(uuid4()),
-            url=rd.choice(IMAGES),
-            comment=f'"{self.input_comment}" by "{self.nickname}"',
-            created_at=datetime.now(),
-            position=Position(x=pos[0], y=pos[1]),
-        )
-        await self._channel.push_object(
-            Object(**self.new_object.dict()),
-            appender=User(
-                id=self._user.id,
-                nickname=self._user.nickname,
-                session=self._user.session,
-                connection=self._user.connection,
-            ),
-        )
-        self.objects.append(self.new_object)
-        self.last_apppended = datetime.now()
-        self.modal = False
-        self.input_comment = ""
 
 
 def render_object(o: RxObject):
@@ -226,17 +184,31 @@ def render_object(o: RxObject):
             height=50,
         ),
         label=o.comment,
+        z_index=-2,
     )
 
 
 def render_event(e: str):
-    return rx.fragment(rx.box(e), rx.divider())
+    return rx.fragment(rx.box(rx.text(e)), rx.divider())
 
 
-def latest_event():
+def notice():
     return rx.cond(
-        CanvasState.show_lateset_event,
-        rx.box(CanvasState.last_event_text, position="fixed", top=10, right=10),
+        CanvasState.show_notice,
+        rx.box(
+            CanvasState.notice_message,
+            text_overflow='ellipsis',
+            width='20em',
+            height='5em',
+            position="fixed",
+            padding='1em',
+            top=10,
+            right=10,
+            z_index=999,
+            bg="white",
+            border_radius=5,
+            box_shadow="5px 5px 5px 5px gray",
+        ),
     )
 
 
@@ -254,7 +226,9 @@ def events_list():
                             ),
                         )
                     ),
-                    rx.drawer_body(rx.foreach(CanvasState.events, render_event)),
+                    rx.drawer_body(
+                        rx.vstack(rx.foreach(CanvasState.events, render_event))
+                    ),
                 ),
                 bg="rgba(0, 0, 0, 0)",
             ),
@@ -271,57 +245,132 @@ def events_list():
     )
 
 
-def deco(src: str):
-    return rx.image(
-        src=src, height=50, on_click=lambda: CanvasState.set_selected_src(src)
+class AddingDecoModal(CanvasState):
+    SELECTED_BORDER: ClassVar[str] = "1px solid purple"
+    show_modal: bool = False
+    prompt: str = ""
+    images: list[str] = IMAGES
+    borders: dict[str, str] = {k: "1px solid rgba(0,0,0,0)" for k in IMAGES}
+
+    def toggle_modal(self):
+        self.show_modal = not self.show_modal
+
+    def go_batch_mode(self):
+        self.show_modal = False
+        return CanvasState.go_batch_mode
+
+    def select_image(self, s: str):
+        self.borders = {k: "1px solid rgba(0,0,0,0)" for k in IMAGES}
+        self.borders[urlparse(s).path] = self.SELECTED_BORDER
+        return super().set_selected_image_uri(s)
+
+
+def deco_adding_modal():
+    comment_asking_text = '장식과 함께할 댓글을 작성해주세요.'
+
+    def comment_input():
+        return rx.fragment(
+            rx.divider(),
+            rx.text(
+                comment_asking_text,
+                padding_top="1em",
+                padding_bottom="1em",
+            ),
+            rx.divider(),
+            rx.input(value=CanvasState.comment, on_change=CanvasState.set_comment),
+        )
+
+    def render_image(o):
+        return rx.box(
+            rx.center(
+                ImageSrcOnClick.create(
+                    src=o[0],
+                    width=50,
+                    object_fit="contain",
+                    on_click=AddingDecoModal.select_image,
+                ),
+                border=o[1],
+                padding="5px",
+                border_radius="3px",
+            )
+        )
+
+    prepared_tab_panel = rx.tab_panel(
+        rx.responsive_grid(
+            rx.foreach(
+                AddingDecoModal.borders,
+                render_image,  # 원래 비율에 맞추게
+            ),
+            columns=[3, 4, 5, 6],
+            spacing="4",
+            height="20em",
+            max_height="20em",
+            overflow="auto",
+        ),
+        comment_input(),
+    )
+
+    upload_tab_panel = rx.tab_panel(
+        rx.upload(
+            rx.flex(
+                rx.box("사진을 드래그하거나 여기를 클릭해서 사진을 선택해주세요."),
+            ),
+            height="20em",
+            justify_content="center",
+            align_items="center",
+        ),
+        rx.selected_files(),
+        comment_input(),
+    )
+
+    return rx.modal(
+        rx.modal_overlay(
+            rx.modal_content(
+                rx.modal_header("장식 추가하기"),
+                rx.modal_body(
+                    rx.tabs(
+                        rx.tab_list(rx.tab("프리셋"), rx.tab("직접 업로드")),
+                        rx.tab_panels(prepared_tab_panel, upload_tab_panel),
+                    ),
+                ),
+                rx.modal_footer(
+                    rx.button(
+                        "장식하기",
+                        on_click=AddingDecoModal.go_batch_mode,
+                    ),
+                    rx.button(
+                        "닫기", on_click=AddingDecoModal.toggle_modal, margin_left=5
+                    ),
+                ),
+            )
+        ),
+        is_open=AddingDecoModal.show_modal,
     )
 
 
 def tree_canvas():
     return rx.fragment(
         rx.container(
-            rx.box(
-                rx.image(
-                    src="/harmonic_Tree.svg", width=400, height=800, position="relative"
-                ),
-                rx.foreach(CanvasState.objects, render_object),
-                # background_image='/harmonic_Tree.svg',
-                position="relative",
+            rx.image(
+                src="/harmonic_Tree.svg", width=400, height=800, position="absolute"
             ),
+            Canvas.create(
+                width=400,
+                height=800,
+                z_index=1,
+                position="relative",
+                on_click=CanvasState.batch_object,
+            ),
+            rx.foreach(CanvasState.objects, render_object),
+            position="relative",
         ),
+        deco_adding_modal(),
         rx.button(
             "장식하기",
-            on_click=CanvasState.toggle_modal,
+            on_click=AddingDecoModal.toggle_modal,
             position="fixed",
             right=10,
             bottom=10,
-        ),
-        rx.modal(
-            rx.modal_overlay(
-                rx.modal_content(
-                    rx.modal_header("장식 추가하기"),
-                    rx.modal_body(
-                        rx.hstack(rx.image(src="/decos/candy-cane.svg", height=50)),
-                        rx.divider(),
-                        rx.text("다른 사람들과 공유할 코멘트를 작성해주세요."),
-                        rx.divider(),
-                        rx.input(
-                            value=CanvasState.input_comment,
-                            on_change=CanvasState.set_input_comment,
-                        ),
-                    ),
-                    rx.modal_footer(
-                        rx.button(
-                            "장식하기",
-                            on_click=CanvasState.push_object,
-                        ),
-                        rx.button(
-                            "닫기", on_click=CanvasState.toggle_modal, margin_left=5
-                        ),
-                    ),
-                )
-            ),
-            is_open=CanvasState.modal,
         ),
     )
 
@@ -331,24 +380,6 @@ def canvas():
     return rx.fragment(
         events_list(),
         tree_canvas(),
-        latest_event(),
+        notice(),
         rx.heading(CanvasState.nickname, position="fixed", left=10, top=10),
     )
-
-
-"/decos/bauble.png",
-"/decos/bauble3.png",
-"/decos/bauble4.png",
-"/decos/buable2.png",
-"/decos/candy-cane.svg",
-"/decos/candy-cane2.svg",
-"/decos/christmas-bell.svg",
-"/decos/christmas-bell2.svg",
-"/decos/christmas-candle-clipart.svg",
-"/decos/christmas-candle.svg",
-"/decos/christmas-stocking.svg",
-"/decos/christmas-stocking2.svg",
-"/decos/christmas-stocking3.svg",
-"/decos/christmas-wreath.svg",
-"/decos/Picture1.png",
-"/decos/red-stocking.png",
